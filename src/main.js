@@ -59,3 +59,70 @@ $('export').addEventListener('click',()=>{
   const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='fly-brain-benchmark.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
 if(renderer) requestAnimationFrame(tick);
+
+let learningWorker = null;
+let learningRows = null;
+function endTraining() {
+  if (learningWorker) learningWorker.terminate();
+  learningWorker = null;
+  $('train').disabled = false;
+  $('cancelTrain').disabled = true;
+}
+$('train').addEventListener('click', () => {
+  if (learningWorker) return;
+  learningRows = null;
+  $('exportLearning').disabled = true;
+  $('train').disabled = true;
+  $('cancelTrain').disabled = false;
+  $('learningResults').innerHTML = '<tr><td colspan="5">訓練中…</td></tr>';
+  $('learningStatus').textContent = '256要素の訓練を開始しています。';
+  try {
+    const worker = new Worker(new URL('./learning-worker.js', import.meta.url), { type: 'module' });
+    learningWorker = worker;
+    worker.onmessage = event => {
+      if (worker !== learningWorker) return;
+      const message = event.data;
+      if (message.type === 'progress') {
+        $('learningStatus').textContent = `${message.elements.toLocaleString()}要素 · 訓練 ${message.epoch}/4 回目（${message.index + 1}/4 種類）`;
+      } else if (message.type === 'complete') {
+        learningRows = message.rows;
+        $('learningResults').replaceChildren();
+        for (const row of learningRows) {
+          const cells = [row.elements.toLocaleString(), (row.before * 100).toFixed(1) + '%',
+            (row.after * 100).toFixed(1) + '%', ((row.after - row.before) * 100).toFixed(1) + 'pt',
+            (row.trainingMs / 1000).toFixed(2) + '秒'];
+          const tr = document.createElement('tr');
+          cells.forEach((value, index) => { const td = document.createElement('td'); td.textContent = value;
+            if (index === 3 && row.after > row.before) td.className = 'positive'; tr.append(td); });
+          $('learningResults').append(tr);
+        }
+        $('learningStatus').textContent = '完了 · 訓練未使用の256問で比較しました。';
+        $('exportLearning').disabled = false;
+        endTraining();
+      }
+    };
+    worker.onerror = () => {
+      $('learningStatus').textContent = '訓練に失敗しました。ページを再読み込みして再試行してください。';
+      endTraining();
+    };
+    worker.postMessage({ type: 'start' });
+  } catch (error) {
+    $('learningStatus').textContent = `訓練を開始できません: ${error.message}`;
+    endTraining();
+  }
+});
+$('cancelTrain').addEventListener('click', () => {
+  endTraining();
+  $('learningStatus').textContent = '訓練を中止しました。';
+  $('learningResults').innerHTML = '<tr><td colspan="5">測定待ち</td></tr>';
+});
+$('exportLearning').addEventListener('click', () => {
+  if (!learningRows) return;
+  const header = 'timestamp,user_agent,task,train_seed,test_seed,train_examples,test_examples,epochs,elements,accuracy_before,accuracy_after,training_ms,evaluation_ms';
+  const lines = learningRows.map(row => [new Date().toISOString(),navigator.userAgent,'synthetic_odor_food_left_right',
+    0x1ab2026,0x6f43af1,512,256,4,row.elements,row.before,row.after,row.trainingMs,row.evaluationMs]
+    .map(value => '"' + String(value).replaceAll('"','""') + '"').join(','));
+  const url = URL.createObjectURL(new Blob([header+'\n'+lines.join('\n')+'\n'], { type: 'text/csv;charset=utf-8' }));
+  const anchor = document.createElement('a');anchor.href = url;anchor.download = 'fly-learning-comparison.csv';anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
